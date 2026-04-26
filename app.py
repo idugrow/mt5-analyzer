@@ -1,128 +1,120 @@
 import streamlit as st
 import pandas as pd
 import xml.etree.ElementTree as ET
+import io
 
 st.set_page_config(page_title="Algo-Optimizer Model One", layout="wide")
 
-st.title("🚀 Algo-Optimizer: Fase 1 & 2 (Multi-File Processing)")
-st.write("Silakan upload ke-5 file XML hasil optimasi Anda (Rentang 2006-2025).")
+# --- FUNGSI PARSING XML (DIBERIKAN CACHE AGAR STABIL) ---
+@st.cache_data
+def parse_mt5_xml(uploaded_file):
+    try:
+        tree = ET.parse(uploaded_file)
+        root = tree.getroot()
+        ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
+        rows = root.findall('.//ss:Worksheet[1]//ss:Table//ss:Row', ns)
+        
+        data = []
+        for row in rows:
+            cells = [cell.text for cell in row.findall('.//ss:Data', ns)]
+            data.append(cells)
+        
+        if len(data) > 1:
+            df = pd.DataFrame(data[1:], columns=data[0])
+            # Cleaning kolom
+            kolom_dibuang = ['Pass', 'Result', 'Custom']
+            df = df.drop(columns=[c for c in kolom_dibuang if c in df.columns])
+            # Numerik
+            cols_numeric = ['Profit', 'Expected', 'Profit Fact', 'Recovery', 'Equity DD', 'Trades', 'JAM', 'CND', 'EMA', 'TTP', 'SLP']
+            for c in cols_numeric:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce')
+            # Hari
+            hari_cols = ['SE', 'SS', 'R', 'K', 'J']
+            for col in hari_cols:
+                if col in df.columns:
+                    df[col] = df[col].astype(str).str.lower().str.strip().map({'true': '1', 'false': '0'})
+            # Key ID
+            df['Key_ID'] = (
+                "JAM" + df['JAM'].fillna(0).astype(int).astype(str) + "_" +
+                "CND" + df['CND'].fillna(0).astype(int).astype(str) + "_" +
+                "EMA" + df['EMA'].fillna(0).astype(int).astype(str) + "_" +
+                "TTP" + df['TTP'].fillna(0).astype(int).astype(str) + "_" +
+                "SLP" + df['SLP'].fillna(0).astype(int).astype(str) + "_" +
+                "DAYS" + df['SE'].fillna('0').astype(str) + df['SS'].fillna('0').astype(str) + 
+                df['R'].fillna('0').astype(str) + df['K'].fillna('0').astype(str) + df['J'].fillna('0').astype(str)
+            )
+            return df
+    except Exception as e:
+        st.error(f"Gagal memproses file: {e}")
+    return None
 
-# 1. Widget Upload Multiple Files
-uploaded_files = st.file_uploader("Pilih 5 file XML MT5", type=['xml'], accept_multiple_files=True)
+# --- UI UTAMA ---
+st.title("🚀 Algo-Optimizer: Model One (Stable Version)")
 
-# List untuk menampung data dari setiap file
-all_dataframes = []
+# 1. UPLOAD SECTION
+uploaded_files = st.file_uploader("Upload 5 File XML Anda", type=['xml'], accept_multiple_files=True)
 
 if uploaded_files:
-    if len(uploaded_files) > 5:
-        st.warning("⚠️ Anda mengunggah lebih dari 5 file. Sistem hanya akan memproses 5 file pertama.")
-        uploaded_files = uploaded_files[:5]
+    if 'raw_dfs' not in st.session_state:
+        st.session_state['raw_dfs'] = []
+        for f in uploaded_files:
+            processed_df = parse_mt5_xml(f)
+            if processed_df is not None:
+                st.session_state['raw_dfs'].append(processed_df)
 
-    for i, file in enumerate(uploaded_files):
-        try:
-            # Parsing XML Excel Schema
-            tree = ET.parse(file)
-            root = tree.getroot()
-            ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
-            rows = root.findall('.//ss:Worksheet[1]//ss:Table//ss:Row', ns)
-            
-            data = []
-            for row in rows:
-                cells = [cell.text for cell in row.findall('.//ss:Data', ns)]
-                data.append(cells)
-            
-            if len(data) > 1:
-                df = pd.DataFrame(data[1:], columns=data[0])
-                
-                # Pembersihan Kolom
-                kolom_dibuang = ['Pass', 'Result', 'Custom']
-                df = df.drop(columns=[c for c in kolom_dibuang if c in df.columns])
-                
-                # Konversi Numerik
-                cols_numeric = ['Profit', 'Expected', 'Profit Fact', 'Equity DD', 'Trades', 'JAM', 'CND', 'EMA', 'TTP', 'SLP']
-                for c in cols_numeric:
-                    if c in df.columns:
-                        df[c] = pd.to_numeric(df[c], errors='coerce')
-                
-                # Konversi Hari (True/False -> 1/0)
-                hari_cols = ['SE', 'SS', 'R', 'K', 'J']
-                for col in hari_cols:
-                    if col in df.columns:
-                        df[col] = df[col].astype(str).str.lower().str.strip().map({'true': '1', 'false': '0'})
+    if len(st.session_state['raw_dfs']) > 0:
+        # 2. SIDEBAR FILTER
+        with st.sidebar:
+            st.header("⚙️ Filter Kriteria")
+            m_trades = st.slider("Min Trades", 0, 200, 40)
+            m_pf = st.slider("Min Profit Factor", 1.0, 3.0, 1.25, step=0.05)
+            m_payoff = st.number_input("Min Payoff", 0.0, 10.0, 0.4)
+            m_dd = st.slider("Max Drawdown (%)", 1, 100, 15)
 
-                # Pembuatan Key_ID
-                df['Key_ID'] = (
-                    "JAM" + df['JAM'].fillna(0).astype(int).astype(str) + "_" +
-                    "CND" + df['CND'].fillna(0).astype(int).astype(str) + "_" +
-                    "EMA" + df['EMA'].fillna(0).astype(int).astype(str) + "_" +
-                    "TTP" + df['TTP'].fillna(0).astype(int).astype(str) + "_" +
-                    "SLP" + df['SLP'].fillna(0).astype(int).astype(str) + "_" +
-                    "DAYS" + df['SE'].fillna('0').astype(str) + df['SS'].fillna('0').astype(str) + 
-                    df['R'].fillna('0').astype(str) + df['K'].fillna('0').astype(str) + df['J'].fillna('0').astype(str)
-                )
-                
-                # Beri label periode agar tidak tertukar
-                df['Periode'] = f"File_{i+1}"
-                
-                all_dataframes.append(df)
-                st.success(f"✅ {file.name} berhasil diproses!")
-            
-        except Exception as e:
-            st.error(f"Gagal memproses {file.name}: {e}")
+        # 3. APPLY FILTER
+        filtered_dfs = []
+        st.subheader("📊 Status Per Periode")
+        cols = st.columns(len(st.session_state['raw_dfs']))
+        
+        for i, df in enumerate(st.session_state['raw_dfs']):
+            mask = (df['Trades'] >= m_trades) & (df['Profit Fact'] >= m_pf) & \
+                   (df['Expected'] >= m_payoff) & (df['Equity DD'] <= m_dd)
+            f_df = df[mask].copy()
+            filtered_dfs.append(f_df)
+            with cols[i]:
+                st.metric(f"File {i+1}", f"{len(f_df)} Row")
 
-    # Jika semua file sudah ter-upload (misal sudah ada data)
-    if all_dataframes:
+        # 4. INTERSECTION BUTTON
         st.divider()
-        st.subheader("📊 Status Ingestion Data")
-        for idx, temp_df in enumerate(all_dataframes):
-            st.write(f"File {idx+1}: {len(temp_df)} baris data ditemukan.")
-        
-        # Simpan ke session state agar bisa digunakan di Modul selanjutnya tanpa upload ulang
-# Cek apakah data sudah ada di session state dari Modul 1
-if 'all_dfs' in st.session_state and len(st.session_state['all_dfs']) > 0:
-    
-    st.divider()
-    st.header("🎯 FASE 2: Multi-Stage Filtering")
-    
-    # 1. Membuat Sidebar untuk Control Filter
-    with st.sidebar:
-        st.header("⚙️ Kriteria Filter")
-        min_trades = st.slider("Minimal Trades", 0, 200, 40)
-        min_pf = st.slider("Minimal Profit Factor", 1.0, 3.0, 1.25, step=0.05)
-        min_payoff = st.number_input("Minimal Expected Payoff (Point)", 0.0, 5.0, 0.40, step=0.05)
-        max_dd = st.slider("Maksimal Equity Drawdown (%)", 1, 100, 15)
-        
-        st.info(f"Kriteria saat ini:\n- Trades >= {min_trades}\n- PF >= {min_pf}\n- Payoff >= {min_payoff}\n- DD <= {max_dd}%")
+        if st.button("🔍 CARI GOLDEN SETTING"):
+            if len(filtered_dfs) == 5:
+                # Logika Intersection
+                res_ids = set(filtered_dfs[0]['Key_ID'])
+                for d in filtered_dfs[1:]:
+                    res_ids = res_ids.intersection(set(d['Key_ID']))
+                
+                if res_ids:
+                    st.success(f"Ditemukan {len(res_ids)} Parameter Lolos Semua Era!")
+                    # Gabungkan untuk hitung skor
+                    combined = pd.concat([d[d['Key_ID'].isin(res_ids)] for d in filtered_dfs])
+                    summary = combined.groupby('Key_ID').agg({
+                        'Profit Fact': ['mean', 'std'],
+                        'Profit': 'mean',
+                        'Equity DD': 'max'
+                    }).reset_index()
+                    summary.columns = ['Key_ID', 'Avg_PF', 'Std_PF', 'Avg_Profit', 'Max_DD']
+                    summary['Stability'] = 100 - (summary['Std_PF'] / summary['Avg_PF'] * 100)
+                    summary = summary.sort_values('Stability', ascending=False)
+                    
+                    st.dataframe(summary.style.highlight_max(axis=0, subset=['Stability']))
+                else:
+                    st.error("Tidak ada irisan. Longgarkan filter Anda!")
+            else:
+                st.warning("Harap upload tepat 5 file untuk hasil maksimal.")
 
-    # 2. Proses Filtering untuk setiap file
-    filtered_dfs = []
-    
-    st.subheader("📊 Hasil Penyaringan Per Periode")
-    cols = st.columns(len(st.session_state['all_dfs']))
-    
-    for i, df in enumerate(st.session_state['all_dfs']):
-        # Logika Filter
-        mask = (
-            (df['Trades'] >= min_trades) &
-            (df['Profit Fact'] >= min_pf) &
-            (df['Expected'] >= min_payoff) &
-            (df['Equity DD'] <= max_dd)
-        )
-        
-        df_filtered = df[mask].copy()
-        filtered_dfs.append(df_filtered)
-        
-        # Tampilkan status di kolom dashboard
-        with cols[i]:
-            st.metric(label=f"File {i+1}", value=f"{len(df_filtered)} baris", delta=f"{len(df_filtered) - len(df)} terbuang", delta_color="inverse")
-
-    # Simpan hasil filter ke session state untuk FASE 3
-    st.session_state['filtered_dfs'] = filtered_dfs
-
-    if any(len(d) == 0 for d in filtered_dfs):
-        st.warning("⚠️ Perhatian: Ada periode yang memiliki 0 baris setelah difilter. Coba longgarkan kriteria slider Anda.")
-    else:
-        st.success("🔥 Semua periode memiliki kandidat pemenang. Siap lanjut ke FASE 3: Intersection?")
-        if st.button("JALANKAN INTERSECTION (FASE 3)"):
-            st.info("Tombol ditekan! Kita akan masuk ke logika pencarian irisan data.")
-
+# Tombol Reset jika ingin upload ulang dari nol
+if st.sidebar.button("Clear Cache & Upload Ulang"):
+    st.session_state.clear()
+    st.cache_data.clear()
+    st.rerun()
