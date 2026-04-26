@@ -1,30 +1,45 @@
 import streamlit as st
 import pandas as pd
-import io
+import xml.etree.ElementTree as ET
 
 st.set_page_config(page_title="Algo-Optimizer Model One", layout="wide")
 
-st.title("🚀 Algo-Optimizer: Fase 1 (XML Repair Mode)")
-st.write("Upload file XML hasil optimasi MT5 Anda.")
+st.title("🚀 Algo-Optimizer: Fase 1 (MT5 Excel-XML Mode)")
 
 uploaded_file = st.file_uploader("Pilih file XML MT5", type=['xml'])
 
 if uploaded_file is not None:
     try:
-        # Membaca isi file sebagai string
-        string_data = uploaded_file.read().decode('utf-16') # MT5 biasanya pakai UTF-16
+        # 1. Parsing XML secara manual untuk format Excel Spreadsheet
+        tree = ET.parse(uploaded_file)
+        root = tree.getroot()
         
-        # Gunakan read_html pada string data tersebut
-        all_dfs = pd.read_html(io.StringIO(string_data))
+        # Namespace untuk Excel XML
+        ns = {'ss': 'urn:schemas-microsoft-com:office:spreadsheet'}
         
-        if len(all_dfs) > 0:
-            # Mencari tabel yang punya kolom terbanyak (biasanya itu tabel data utamanya)
-            df = max(all_dfs, key=len)
+        # 2. Ambil semua baris (Row) dari Worksheet pertama
+        rows = root.findall('.//ss:Worksheet[1]//ss:Table//ss:Row', ns)
+        
+        data = []
+        for row in rows:
+            # Ambil semua data sel dalam satu baris
+            cells = [cell.text for cell in row.findall('.//ss:Data', ns)]
+            data.append(cells)
+        
+        if len(data) > 1:
+            # Baris pertama biasanya Header
+            df = pd.DataFrame(data[1:], columns=data[0])
             
-            # --- PROSES CLEANING ---
-            # Drop kolom Noise
+            # --- PROSES CLEANING & KEY ID ---
+            # Drop kolom yang tidak perlu
             kolom_dibuang = ['Pass', 'Result', 'Custom']
             df = df.drop(columns=[c for c in kolom_dibuang if c in df.columns])
+            
+            # Konversi kolom numerik (karena XML membacanya sebagai string)
+            cols_numeric = ['Profit', 'Expected', 'Profit Fact', 'Equity DD', 'Trades', 'JAM', 'CND', 'EMA', 'TTP', 'SLP']
+            for c in cols_numeric:
+                if c in df.columns:
+                    df[c] = pd.to_numeric(df[c], errors='coerce')
             
             # Konversi True/False ke 1/0
             hari_cols = ['SE', 'SS', 'R', 'K', 'J']
@@ -33,32 +48,26 @@ if uploaded_file is not None:
                     df[col] = df[col].astype(str).str.lower().str.strip().map({'true': '1', 'false': '0'})
 
             # Membuat Key_ID
-            # Kita pakai fillna('?') jika ada kolom yang hilang agar tidak error
-            cols_required = ['JAM', 'CND', 'EMA', 'TTP', 'SLP', 'SE', 'SS', 'R', 'K', 'J']
-            for c in cols_required:
-                if c not in df.columns:
-                    df[c] = "X" # Penanda jika kolom tidak ditemukan
-
             df['Key_ID'] = (
-                "JAM" + df['JAM'].astype(str) + "_" +
-                "CND" + df['CND'].astype(str) + "_" +
-                "EMA" + df['EMA'].astype(str) + "_" +
-                "TTP" + df['TTP'].astype(str) + "_" +
-                "SLP" + df['SLP'].astype(str) + "_" +
-                "DAYS" + df['SE'].astype(str) + df['SS'].astype(str) + 
-                df['R'].astype(str) + df['K'].astype(str) + df['J'].astype(str)
+                "JAM" + df['JAM'].fillna(0).astype(int).astype(str) + "_" +
+                "CND" + df['CND'].fillna(0).astype(int).astype(str) + "_" +
+                "EMA" + df['EMA'].fillna(0).astype(int).astype(str) + "_" +
+                "TTP" + df['TTP'].fillna(0).astype(int).astype(str) + "_" +
+                "SLP" + df['SLP'].fillna(0).astype(int).astype(str) + "_" +
+                "DAYS" + df['SE'].fillna('0').astype(str) + df['SS'].fillna('0').astype(str) + 
+                df['R'].fillna('0').astype(str) + df['K'].fillna('0').astype(str) + df['J'].fillna('0').astype(str)
             )
 
             st.success(f"✅ Berhasil! Ditemukan {len(df)} baris data.")
             
-            # Preview
-            st.subheader("Preview Data")
+            # Preview Hasil Akhir
+            st.subheader("Preview Data dengan Key ID")
             kolom_tampilan = ['Key_ID', 'Profit', 'Expected', 'Profit Fact', 'Equity DD', 'Trades']
             tersedia = [c for c in kolom_tampilan if c in df.columns]
             st.dataframe(df[tersedia].head(10))
+            
         else:
-            st.error("File terbaca, tapi tidak ditemukan tabel data di dalamnya.")
+            st.error("File XML tidak memiliki data yang cukup.")
 
     except Exception as e:
-        st.error(f"Gagal membaca file: {e}")
-        st.info("Saran: Coba buka file XML tersebut di Notepad, apakah isinya terlihat seperti teks tabel (HTML) atau kode XML murni?")
+        st.error(f"Gagal membaca XML: {e}")
